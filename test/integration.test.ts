@@ -258,6 +258,30 @@ describe("integration: pi -> extension -> Langfuse export", () => {
     }
   });
 
+  it("/langfuse-env sets the environment of the session's later turns, also after a resume", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const sandbox = createSandbox(mock.port);
+      const env = { ...buildLangfuseEnv(capture), LANGFUSE_TRACING_ENVIRONMENT: "configured" };
+      const first = await runPi(sandbox, "Explore this project and summarize it", { env });
+      assert.equal(first.status, 0, `pi failed: ${first.stderr}`);
+      const set = await runPi(sandbox, "/langfuse-env session-env", { env, continue: true });
+      assert.equal(set.status, 0, `pi failed: ${set.stderr}`);
+      const second = await runPi(sandbox, "Explore this project and summarize it", { env, continue: true });
+      assert.equal(second.status, 0, `pi failed: ${second.stderr}`);
+      await waitForRequests(capture, 2);
+
+      const roots = byStart(findSpansByName(capture.spans(), "Conversational Turn"));
+      assert.equal(roots.length, 2);
+      const environmentsOf = (root: CapturedSpan) =>
+        new Set(capture.spans().filter((s) => s.traceId === root.traceId).map((s) => s.attrs["langfuse.environment"]));
+      assert.deepEqual(environmentsOf(roots[0]!), new Set(["configured"]));
+      assert.deepEqual(environmentsOf(roots[1]!), new Set(["session-env"]));
+    } finally {
+      capture.close();
+    }
+  });
+
   it("continues the session: turn 2 shares the session id and increments the turn number", async () => {
     const capture = await startCaptureServer();
     try {

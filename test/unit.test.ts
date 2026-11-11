@@ -18,6 +18,9 @@ import {
   toChatMlMessage,
   type ChatMlMessage,
   type PiUsage,
+  ENVIRONMENT_ENTRY,
+  isValidEnvironment,
+  sessionEnvironment,
 } from "../src/index.ts";
 
 describe("createSecretRedactor", () => {
@@ -797,5 +800,20 @@ describe("extractThinking", () => {
   it("keeps a long reasoning block whole", () => {
     const parts = extractThinking([{ type: "thinking", thinking: "z".repeat(120_000) }]);
     assert.equal(parts[0]!.content.length, 120_000);
+  });
+});
+
+describe("session environment (/langfuse-env)", () => {
+  it("accepts Langfuse environment names only", () => {
+    for (const ok of ["lab", "retsuko-lab", "a_b-1", "x".repeat(40)]) assert.ok(isValidEnvironment(ok), ok);
+    for (const bad of ["", "Lab", "has space", "x".repeat(41), "langfuse-x", "a/b"]) assert.ok(!isValidEnvironment(bad), bad);
+  });
+
+  it("takes the latest choice on the branch, and reset means the configured one", () => {
+    const set = (environment: string | null) => ({ type: "custom", customType: ENVIRONMENT_ENTRY, data: { environment } });
+    assert.equal(sessionEnvironment([]), undefined);
+    assert.equal(sessionEnvironment([set("a"), { type: "message" }, set("b")]), "b");
+    assert.equal(sessionEnvironment([set("a"), set(null)]), undefined);
+    assert.equal(sessionEnvironment([set("a"), { type: "custom", customType: "other", data: { environment: "z" } }]), "a");
   });
 });

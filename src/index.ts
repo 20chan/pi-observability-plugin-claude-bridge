@@ -614,6 +614,7 @@ function isLangfuseSpan(span: { attributes: Record<string, unknown> }): boolean 
 function createRuntime(
   config: LangfuseConfig,
   resolveTraceAttributes: () => TraceAttributes,
+  resolveEnvironment: () => string | undefined = () => undefined,
 ): Runtime {
   const redactSecrets = createSecretRedactor(config.publicKey, config.secretKey);
   const processor = new LangfuseSpanProcessor({
@@ -631,6 +632,9 @@ function createRuntime(
   const baseOnStart = processor.onStart.bind(processor);
   processor.onStart = (span, parentContext) => {
     baseOnStart(span, parentContext);
+    // /langfuse-env overrides the configured environment for this session.
+    const environment = resolveEnvironment();
+    if (environment) span.setAttribute(LangfuseOtelSpanAttributes.ENVIRONMENT, environment);
     span.setAttributes(resolveTraceAttributes());
   };
   const provider = new NodeTracerProvider({
@@ -675,6 +679,26 @@ const debug = (...args: unknown[]) => {
   if (DEBUG) console.error("[pi-langfuse]", ...args);
 };
 
+/** Session entry type that records /langfuse-env changes, so a resumed session keeps them. */
+export const ENVIRONMENT_ENTRY = "langfuse-environment";
+
+/** Langfuse's rule for environment names. */
+export function isValidEnvironment(name: string): boolean {
+  return /^[a-z0-9_-]{1,40}$/.test(name) && !name.startsWith("langfuse");
+}
+
+/** The latest /langfuse-env choice on the session's branch; undefined means the configured environment. */
+export function sessionEnvironment(entries: ReadonlyArray<{ type: string; customType?: string; data?: unknown }>): string | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]!;
+    if (entry.type === "custom" && entry.customType === ENVIRONMENT_ENTRY) {
+      const environment = (entry.data as { environment?: unknown } | undefined)?.environment;
+      return typeof environment === "string" ? environment : undefined;
+    }
+  }
+  return undefined;
+}
+
 export default function (pi: ExtensionAPI) {
   debug("factory start");
   const config = loadConfig();
@@ -708,8 +732,21 @@ export default function (pi: ExtensionAPI) {
     [ENV_PARENT_EXTERNAL_TRACE]: process.env[ENV_PARENT_EXTERNAL_TRACE],
   };
 
+  // /langfuse-env: this session's environment, over the configured one. Children (subagents) get it
+  // through LANGFUSE_TRACING_ENVIRONMENT, which they read as their configured environment.
+  let environmentOverride: string | undefined;
+  const inheritedEnvironment = process.env.LANGFUSE_TRACING_ENVIRONMENT;
+  const applyEnvironment = (environment: string | undefined, ctx: ExtensionContext) => {
+    environmentOverride = environment;
+    if (environment) process.env.LANGFUSE_TRACING_ENVIRONMENT = environment;
+    else if (inheritedEnvironment === undefined) delete process.env.LANGFUSE_TRACING_ENVIRONMENT;
+    else process.env.LANGFUSE_TRACING_ENVIRONMENT = inheritedEnvironment;
+    if (ctx.hasUI) ctx.ui.setStatus("langfuse", environment ? `langfuse ✓ (${environment})` : "langfuse ✓");
+  };
+  const effectiveEnvironment = () => environmentOverride ?? config.environment ?? "default";
+
   const ensureRuntime = (): Runtime => {
-    if (!runtime || runtime.shutdown) runtime = createRuntime(config, () => traceAttributes);
+    if (!runtime || runtime.shutdown) runtime = createRuntime(config, () => traceAttributes, () => environmentOverride);
     return runtime;
   };
 
@@ -834,13 +871,36 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     debug("session_start");
-    if (ctx.hasUI) ctx.ui.setStatus("langfuse", "langfuse ✓");
+    applyEnvironment(sessionEnvironment(ctx.sessionManager.getBranch()), ctx);
     try {
       const result = await pi.exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], { timeout: 1000 });
       gitBranch = result.code === 0 ? result.stdout.trim() : undefined;
     } catch {
       gitBranch = undefined;
     }
+  });
+
+  pi.registerCommand("langfuse-env", {
+    description: "Langfuse environment of this session: /langfuse-env <name> sets it, /langfuse-env reset restores the configured one",
+    handler: async (args, ctx) => {
+      const name = args.trim();
+      const say = (message: string, type: "info" | "error" = "info") => {
+        if (ctx.hasUI) ctx.ui.notify(message, type);
+        else console.error(`[pi-langfuse] ${message}`);
+      };
+      if (!name) {
+        say(`langfuse environment: ${effectiveEnvironment()}${environmentOverride ? " (this session)" : ""}`);
+        return;
+      }
+      if (name !== "reset" && !isValidEnvironment(name)) {
+        say(`invalid environment "${name}": lowercase letters, digits, - and _, at most 40, not starting with "langfuse"`, "error");
+        return;
+      }
+      const environment = name === "reset" ? undefined : name;
+      pi.appendEntry(ENVIRONMENT_ENTRY, { environment: environment ?? null });
+      applyEnvironment(environment, ctx);
+      say(`langfuse environment: ${effectiveEnvironment()}, from the next turn`);
+    },
   });
 
   pi.on("before_agent_start", (event, ctx) => {
