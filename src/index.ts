@@ -666,6 +666,8 @@ interface PromptState {
   userText: string;
   turnImages: PiImagePart[];
   systemPrompt?: string;
+  /** The turn is its trace's root: no subagent parent and no attached external trace. */
+  ownsTrace: boolean;
 }
 
 const DEBUG = process.env.PI_LANGFUSE_DEBUG === "true";
@@ -788,6 +790,13 @@ export default function (pi: ExtensionAPI) {
         ...(opts.cancelled ? { cancelled: true } : {}),
       },
     });
+    // The trace lists show trace-level input/output; a subagent shares its parent's trace and leaves them alone.
+    if (state.ownsTrace) {
+      state.root.setTraceIO({
+        input: { role: "user", content: state.userText },
+        output: state.lastAssistantText ? { role: "assistant", content: state.lastAssistantText } : undefined,
+      });
+    }
     state.root.end();
     withdrawParentContext();
     state = undefined;
@@ -889,6 +898,7 @@ export default function (pi: ExtensionAPI) {
       sawError: false,
       userText,
       turnImages: [...promptImages],
+      ownsTrace: !inheritedParent,
     };
     publishParentContext(root, sessionId);
     debug("root created, turn", turnNumber);
@@ -910,13 +920,15 @@ export default function (pi: ExtensionAPI) {
     debug("system prompt captured", systemPrompt.length);
   });
 
-  pi.on("before_provider_request", (event, ctx) => {
-    if (!state) return;
-    if (state.openGeneration && !state.openGeneration.finished) {
-      const gen = state.openGeneration;
-      gen.obs.update({ level: "WARNING", statusMessage: "Superseded by provider retry", metadata: { superseded: true } });
-      gen.obs.end();
-    }
+  // Starts the generation for one model call. Usually from before_provider_request; providers that
+  // stream through `streamSimple` (e.g. pi-claude-bridge) send no HTTP request, so pi never fires that
+  // event and message_end starts the generation for the finished message instead.
+  const openGeneration = (
+    model: ExtensionContext["model"],
+    payload?: unknown,
+    thinkingLevel?: ExtensionContext["thinkingLevel"],
+  ) => {
+    if (!state) return undefined;
     const index = ++state.generationCount;
     const history = lastContextHistory;
     const baseInput: unknown[] =
@@ -936,18 +948,29 @@ export default function (pi: ExtensionAPI) {
       GENERATION_PREFIX,
       {
         input: attachToolDefinitions(generationInput, activeToolDefinitions(pi)),
-        model: ctx.model?.id,
-        modelParameters: extractModelParameters(event.payload, ctx.model, ctx.thinkingLevel),
+        model: model?.id,
+        modelParameters: extractModelParameters(payload, model, thinkingLevel),
         metadata: {
           assistant_index: index - 1,
           input_source: history ? "context" : "delta",
           ...(history ? { history_message_count: history.length } : {}),
-          ...(ctx.model ? { provider: ctx.model.provider, context_window: ctx.model.contextWindow } : {}),
+          ...(model ? { provider: model.provider, context_window: model.contextWindow } : {}),
         },
       },
       { asType: "generation" },
     );
     state.openGeneration = { obs, index, sawFirstToken: false, finished: false };
+    return state.openGeneration;
+  };
+
+  pi.on("before_provider_request", (event, ctx) => {
+    if (!state) return;
+    if (state.openGeneration && !state.openGeneration.finished) {
+      const gen = state.openGeneration;
+      gen.obs.update({ level: "WARNING", statusMessage: "Superseded by provider retry", metadata: { superseded: true } });
+      gen.obs.end();
+    }
+    openGeneration(ctx.model, event.payload, ctx.thinkingLevel);
   });
 
   pi.on("message_update", (event) => {
@@ -964,7 +987,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("message_end", (event) => {
+  pi.on("message_end", (event, ctx) => {
     if (!state) return;
     const message = event.message as {
       role: string;
@@ -979,8 +1002,11 @@ export default function (pi: ExtensionAPI) {
       usage?: PiUsage;
     };
     if (message.role !== "assistant") return;
-    const gen = state.openGeneration;
-    if (!gen || gen.finished) return;
+    let gen = state.openGeneration;
+    if (!gen || gen.finished) {
+      gen = openGeneration(ctx.model, undefined, ctx.thinkingLevel);
+      if (!gen) return;
+    }
 
     const text = extractText(message.content);
     const tools = extractToolCalls(message.content);

@@ -17,6 +17,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import zlib from "node:zlib";
 
+/** The answer of the streamSimple provider fixture (fixtures/stream-simple-provider.ts). */
+export const STREAM_SIMPLE_ANSWER = "streamed without an HTTP request";
+
 export const REPO_ROOT = resolve(import.meta.dirname, "..");
 // PI_BIN lets CI run the same tests against other pi versions.
 const PI_BIN = process.env.PI_BIN || join(REPO_ROOT, "node_modules", ".bin", "pi");
@@ -416,15 +419,18 @@ export function runPi(
     continue?: boolean;
     env?: Record<string, string | undefined>;
     extensions?: string[];
+    /** Provider and model to run; defaults to the mock OpenAI-compatible provider. */
+    model?: { provider: string; id: string };
   } = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const args = ["-e", EXTENSION];
   for (const extra of opts.extensions ?? []) args.push("-e", extra);
+  const model = opts.model ?? { provider: "mock", id: "mock-gpt-1" };
   args.push(
     "--provider",
-    "mock",
+    model.provider,
     "--model",
-    "mock-gpt-1",
+    model.id,
     "--api-key",
     "mock-key",
     "--no-context-files",

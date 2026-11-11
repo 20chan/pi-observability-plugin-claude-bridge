@@ -19,6 +19,7 @@ import {
   SUMMARIZATION_USAGE,
   runPi,
   startCaptureServer,
+  STREAM_SIMPLE_ANSWER,
   startMockProvider,
   THINK_ONLY_REASONING,
   waitForRequests,
@@ -206,6 +207,52 @@ describe("integration: pi -> extension -> Langfuse export", () => {
           `${span.name} must carry the trace name`,
         );
       }
+    } finally {
+      capture.close();
+    }
+  });
+
+  it("records the answer of a provider that streams without an HTTP request (streamSimple)", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const sandbox = createSandbox(mock.port);
+      const result = await runPi(sandbox, "Say something", {
+        env: buildLangfuseEnv(capture),
+        extensions: [join(REPO_ROOT, "test", "fixtures", "stream-simple-provider.ts")],
+        model: { provider: "stream-simple", id: "stream-simple-1" },
+      });
+      assert.equal(result.status, 0, `pi failed: ${result.stderr}`);
+      await waitForRequests(capture, 1);
+      const spans = capture.spans();
+
+      const root = findSpansByName(spans, "Conversational Turn")[0]!;
+      const generations = findSpansByName(spans, "LLM Call");
+      assert.equal(generations.length, 1, "the answer gets a generation although pi fires no before_provider_request");
+      const gen = generations[0]!;
+      assert.equal(gen.parentSpanId, root.spanId);
+      assert.equal(gen.attrs["langfuse.observation.type"], "generation");
+      assert.equal(gen.attrs["langfuse.observation.model.name"], "stream-simple-1");
+      assert.deepEqual(contentsOf(gen), ["Say something"]);
+      assert.equal(outputOf(gen).content, STREAM_SIMPLE_ANSWER);
+      assert.equal(outputOf(root).content, STREAM_SIMPLE_ANSWER);
+    } finally {
+      capture.close();
+    }
+  });
+
+  it("sets the trace input and output on a top-level turn", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const sandbox = createSandbox(mock.port);
+      const result = await runPi(sandbox, "Explore this project and summarize it", { env: buildLangfuseEnv(capture) });
+      assert.equal(result.status, 0, `pi failed: ${result.stderr}`);
+      await waitForRequests(capture, 1);
+
+      const root = findSpansByName(capture.spans(), "Conversational Turn")[0]!;
+      const traceIO = (key: string) => JSON.parse(root.attrs[`langfuse.trace.${key}`] as string);
+      assert.deepEqual(traceIO("input"), { role: "user", content: "Explore this project and summarize it" });
+      assert.equal(traceIO("output").role, "assistant");
+      assert.equal(traceIO("output").content, outputOf(root).content);
     } finally {
       capture.close();
     }
