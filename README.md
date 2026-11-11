@@ -90,6 +90,18 @@ a single value without editing the file.
 | `OTEL_SERVICE_NAME`            | OpenTelemetry service name for the exported spans. Unset, OpenTelemetry's own default applies                                                     | No                  |
 | `OTEL_RESOURCE_ATTRIBUTES`     | Extra OpenTelemetry resource attributes as a comma-separated `key=value` list (e.g. `service.namespace=engineering,team.name=platform`). Langfuse shows them under `resourceAttributes` in the trace and observation metadata | No                  |
 
+## Change the environment of a session
+
+```
+/langfuse-env lab      # traces of this session go to environment "lab", from the next turn
+/langfuse-env          # show the current environment
+/langfuse-env reset    # back to the configured environment
+```
+
+The choice is saved in the session, so resuming it (`pi -c`) keeps it, and subagents started from the session
+inherit it. pi saves a session only once it has a message, so a `pi -p "/langfuse-env lab"` run on its own is not
+kept; give the prompt in the same run (`pi -p "/langfuse-env lab" "your prompt"`).
+
 ## Enable and disable tracing
 
 | Scope                   | How                                                         |
