@@ -4,7 +4,8 @@
  * - startMockProvider(): OpenAI-compatible chat/completions server with a
  *   deterministic 3-stage script (bash ls → read README.md → final answer,
  *   realistic usage incl. cache tokens). Prompts containing "[fail]" run a
- *   failing command first, so error paths can be asserted.
+ *   failing command first, so error paths can be asserted; "[image]" reads
+ *   pixel.png instead.
  * - startCaptureServer(): fake Langfuse ingest that records every request.
  * - runPi(): spawns the real pi CLI (devDependency) in a throwaway sandbox
  *   (PI_CODING_AGENT_DIR = temp dir), loading the extension via `-e`.
@@ -130,6 +131,7 @@ export function startMockProvider(): Promise<MockProvider> {
       const failMode = JSON.stringify(lastUser?.content ?? "").includes("[fail]");
       const toolOnlyMode = JSON.stringify(lastUser?.content ?? "").includes("[tool-only]");
       const thinkOnlyMode = JSON.stringify(lastUser?.content ?? "").includes("[think-only]");
+      const imageMode = JSON.stringify(lastUser?.content ?? "").includes("[image]");
       // True only when a test loads the subagent fixture. The default script
       // does not change for the other tests.
       const canDelegate = (payload.tools ?? []).some((t) => t.function?.name === "subagent");
@@ -189,6 +191,18 @@ export function startMockProvider(): Promise<MockProvider> {
           text: "The file does not exist, so I stopped.",
           finish: "stop",
           usage: usage(980, 30, 512),
+        });
+      } else if (imageMode && stage === 0) {
+        streamChunks(res, model, {
+          tool: { name: "read", args: { path: "pixel.png" } },
+          finish: "tool_calls",
+          usage: usage(1100, 24, 0),
+        });
+      } else if (imageMode) {
+        streamChunks(res, model, {
+          text: "It is one pixel. Done.",
+          finish: "stop",
+          usage: usage(1250, 30, 0),
         });
       } else if (toolOnlyMode && stage === 0) {
         streamChunks(res, model, {

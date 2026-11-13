@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import util from "node:util";
 import {
   type Capture,
   type CapturedSpan,
@@ -788,6 +789,13 @@ describe("integration: pi -> extension -> Langfuse export", () => {
         assert.equal(call.type, "function");
         assert.ok(call.id, "a tool call must keep its id");
       }
+      // Langfuse's session view starts a new thread when a call's input does not replay the previous output.
+      for (let i = 1; i < generations.length; i++) {
+        assert.ok(
+          historyOf(generations[i]!).some((m) => util.isDeepStrictEqual(m, outputOf(generations[i - 1]!))),
+          `LLM call ${i} must replay the output of call ${i - 1} verbatim`,
+        );
+      }
 
       const root = findSpansByName(capture.spans(), "Conversational Turn")[0]!;
       assert.deepEqual(JSON.parse(String(root.attrs["langfuse.observation.input"])), {
@@ -963,6 +971,37 @@ describe("integration: pi -> extension -> Langfuse export", () => {
       const withReasoning = sent.at(-1)!.filter((m) => m.reasoning_content);
       assert.equal(withReasoning.length, 1);
       assert.equal(withReasoning[0]!.reasoning_content, FINAL_ANSWER_THINKING);
+    } finally {
+      capture.close();
+    }
+  });
+
+  it("uploads images a tool returns as media on the tool span and the next call's history", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const sandbox = createSandbox(mock.port);
+      // A 1x1 PNG.
+      writeFileSync(
+        join(sandbox.workspace, "pixel.png"),
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      );
+      const result = await runPi(sandbox, "[image] What is in pixel.png?", { env: buildLangfuseEnv(capture) });
+      assert.equal(result.status, 0, `pi failed: ${result.stderr}`);
+      await waitForRequests(capture, 1);
+
+      const mediaTag = /@@@langfuseMedia:type=image\/png\|id=[^|]+\|source=base64_data_uri@@@/;
+      const tool = findSpansByName(capture.spans(), "Tool: read")[0]!;
+      const toolOutput = String(tool.attrs["langfuse.observation.output"]);
+      assert.match(toolOutput, mediaTag, "the tool span must carry the image as media");
+      assert.ok(!toolOutput.includes("base64,"), "no raw base64 may be exported");
+
+      const generations = byStart(findSpansByName(capture.spans(), "LLM Call"));
+      const toolMessage = historyOf(generations[1]!).find((m) => m.role === "tool")!;
+      assert.ok(Array.isArray(toolMessage.content), "the tool result in the history must be content parts");
+      assert.match(JSON.stringify(toolMessage.content), mediaTag);
     } finally {
       capture.close();
     }

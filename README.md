@@ -24,8 +24,9 @@ Langfuse as its own trace:
 - **Reasoning**: each thinking block is on the step that made it.
 - **Tool calls**: each tool Pi invokes, with input, output, and an `ERROR` level
   when the call fails.
-- **Images**: images you add to a prompt are uploaded as Langfuse media and
-  render inside the trace.
+- **Images**: images you add to a prompt and images tools return (e.g. `read`
+  of a screenshot) are uploaded as Langfuse media and render inside the trace
+  and the session view.
 - **Subagents**: Pi processes spawned by other extensions nest under the turn
   that started them.
 

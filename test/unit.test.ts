@@ -16,6 +16,7 @@ import {
   markDataUris,
   extractThinking,
   toChatMlMessage,
+  toMediaContent,
   type ChatMlMessage,
   type PiUsage,
   ENVIRONMENT_ENTRY,
@@ -551,7 +552,7 @@ describe("markDataUris", () => {
 });
 
 describe("toChatMlMessage", () => {
-  it("renders a user message from content parts, images as markers", () => {
+  it("renders a user message from content parts, images as data URIs for media upload", () => {
     const message = toChatMlMessage({
       role: "user",
       content: [
@@ -559,7 +560,45 @@ describe("toChatMlMessage", () => {
         { type: "image", data: "QUJD", mimeType: "image/png" },
       ],
     });
-    assert.deepEqual(message, { role: "user", content: "look at this\n[image image/png ~0KB]" });
+    assert.deepEqual(message, {
+      role: "user",
+      content: [
+        { type: "text", text: "look at this" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+      ],
+    });
+  });
+
+  it("puts tool result images in place, keeps a marker for an image it cannot upload", () => {
+    const message = toChatMlMessage({
+      role: "toolResult",
+      toolCallId: "c1",
+      toolName: "read",
+      content: [
+        { type: "text", text: "Read image file" },
+        { type: "image", data: "QUJD", mimeType: "image/jpeg" },
+        { type: "image", data: "not base64!", mimeType: "image/png" },
+      ],
+    });
+    assert.deepEqual(message, {
+      role: "tool",
+      tool_call_id: "c1",
+      name: "read",
+      content: [
+        { type: "text", text: "Read image file" },
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,QUJD" } },
+        { type: "text", text: "[image image/png ~0KB]" },
+      ],
+    });
+  });
+
+  it("keeps images as markers when media upload is off", () => {
+    const content = [
+      { type: "text", text: "look at this" },
+      { type: "image", data: "QUJD", mimeType: "image/png" },
+    ];
+    assert.equal(toMediaContent(content, false), "look at this\n[image image/png ~0KB]");
+    assert.equal(toMediaContent([{ type: "text", text: "no images" }]), "no images");
   });
 
   it("keeps a plain string user content as it is", () => {

@@ -414,14 +414,14 @@ export interface ChatMlThinkingPart {
 }
 
 export type ChatMlMessage =
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | ContentPart[] }
   | {
       role: "assistant";
       content?: string;
       thinking?: ChatMlThinkingPart[];
       tool_calls?: ChatMlToolCall[];
     }
-  | { role: "tool"; tool_call_id: string; name: string; content: string; is_error?: true };
+  | { role: "tool"; tool_call_id: string; name: string; content: string | ContentPart[]; is_error?: true };
 
 export function markDataUris(text: string): string {
   return text.replace(
@@ -434,6 +434,26 @@ function renderHistoryContent(content: unknown): string {
   return typeof content === "string" || Array.isArray(content)
     ? renderContentWithImageMarkers(content)
     : safeStringify(content);
+}
+
+/** Text with images as data URIs in place, so the processor uploads them as media; markers when uploads are off. */
+export function toMediaContent(content: unknown, emitMedia = EMIT_IMAGE_MEDIA): string | ContentPart[] {
+  const text = markDataUris(renderHistoryContent(content));
+  if (!emitMedia || !Array.isArray(content)) return text;
+  const parts: ContentPart[] = [];
+  let hasImage = false;
+  for (const part of content) {
+    const image = extractImages([part])[0];
+    const url = image && toDataUri(image);
+    if (url) {
+      parts.push({ type: "image_url", image_url: { url } });
+      hasImage = true;
+      continue;
+    }
+    const partText = markDataUris(renderContentWithImageMarkers([part]));
+    if (partText) parts.push({ type: "text", text: partText });
+  }
+  return hasImage ? parts : text;
 }
 
 export function extractToolCalls(content: unknown): ChatMlToolCall[] {
@@ -483,7 +503,7 @@ export function toChatMlMessage(message: unknown): ChatMlMessage | undefined {
     isError?: unknown;
   };
   if (msg.role === "user") {
-    return { role: "user", content: markDataUris(renderHistoryContent(msg.content)) };
+    return { role: "user", content: toMediaContent(msg.content) };
   }
   if (msg.role === "assistant") {
     const content = markDataUris(extractText(msg.content));
@@ -502,7 +522,7 @@ export function toChatMlMessage(message: unknown): ChatMlMessage | undefined {
       role: "tool",
       tool_call_id: typeof msg.toolCallId === "string" ? msg.toolCallId : "",
       name: typeof msg.toolName === "string" ? msg.toolName : "",
-      content: markDataUris(renderHistoryContent(msg.content)),
+      content: toMediaContent(msg.content),
       ...(msg.isError ? { is_error: true as const } : {}),
     };
   }
@@ -1169,7 +1189,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     open.obs.update({
-      output: rawOutput || undefined,
+      output: images.length ? toMediaContent(result?.content) : rawOutput || undefined,
       ...(event.isError ? { level: "ERROR" as const, statusMessage: "Tool execution failed" } : {}),
       metadata: {
         is_error: Boolean(event.isError),
