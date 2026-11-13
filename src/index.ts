@@ -223,12 +223,6 @@ export function extractText(content: unknown): string {
     .join("");
 }
 
-export function extractToolCalls(content: unknown): ChatMlToolCall[] {
-  if (!Array.isArray(content)) return [];
-  return content
-    .filter((p): p is { type: string; id: string; name: string } => !!p && typeof p === "object" && (p as { type?: string }).type === "toolCall")
-    .map((p) => ({ id: p.id, type: "function" as const, function: { name: p.name } }));
-}
 
 export interface ToolDefinitionInput {
   name: string;
@@ -442,7 +436,7 @@ function renderHistoryContent(content: unknown): string {
     : safeStringify(content);
 }
 
-function historyToolCalls(content: unknown): ChatMlToolCall[] {
+export function extractToolCalls(content: unknown): ChatMlToolCall[] {
   if (!Array.isArray(content)) return [];
   return content
     .filter(
@@ -494,7 +488,7 @@ export function toChatMlMessage(message: unknown): ChatMlMessage | undefined {
   if (msg.role === "assistant") {
     const content = markDataUris(extractText(msg.content));
     const thinking = extractThinking(msg.content);
-    const toolCalls = historyToolCalls(msg.content);
+    const toolCalls = extractToolCalls(msg.content);
     if (!content && !thinking.length && !toolCalls.length) return undefined;
     return {
       role: "assistant",

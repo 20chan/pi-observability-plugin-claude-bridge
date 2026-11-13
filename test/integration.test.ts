@@ -935,7 +935,11 @@ describe("integration: pi -> extension -> Langfuse export", () => {
       const toolStep = outputOf(firstTurn[0]!);
       assert.equal(toolStep.thinking, undefined, "a step that did not reason carries no thinking block");
       assert.deepEqual(toolStep.tool_calls, [
-        { id: toolStep.tool_calls![0]!.id, type: "function", function: { name: "bash" } },
+        {
+          id: toolStep.tool_calls![0]!.id,
+          type: "function",
+          function: { name: "bash", arguments: JSON.stringify({ command: "ls" }) },
+        },
       ]);
 
       const reasoning = history.filter((m) => m.thinking);
